@@ -99,15 +99,9 @@ Description=Speedforce Disk Usage API for Dashy
 After=network.target
 
 [Service]
-# Replace 'kikchan' with your Linux username
 User=kikchan
-
-# Replace with your script directory
-WorkingDirectory=/home/kikchan/.local/bin
-
-# Use absolute paths
-ExecStart=/usr/bin/python3 /home/kikchan/.local/bin/disks_api.py
-
+WorkingDirectory=/home/kikchan/Metalforce/hdd-api
+ExecStart=/home/kikchan/Metalforce/hdd-api/venv/bin/python disks_api.py
 Restart=always
 RestartSec=5
 
