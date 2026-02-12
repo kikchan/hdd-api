@@ -114,7 +114,7 @@ body{
 
 #chart{
   width:100%!important;
-  margin-top:14px;
+  margin-top:10px;
 }
 </style>
 </head>
@@ -126,12 +126,14 @@ body{
   <div>
     <div class="temp cpu" id="cpu_main">--°C</div>
     <div class="usage" id="cpu_usage">--%</div>
+    <br/>
     <div class="stats" id="cpu_stats"></div>
   </div>
 
   <div>
     <div class="temp gpu" id="gpu_main">--°C</div>
     <div class="usage" id="gpu_usage">--%</div>
+    <br/>
     <div class="stats" id="gpu_stats"></div>
   </div>
 
