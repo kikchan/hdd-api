@@ -47,7 +47,7 @@ source venv/bin/activate
 
 ### 3. Install dependencies
 ```bash
-pip install flask flask-cors psutil
+pip install flask flask-cors psutil flask_socketio
 ```
 
 ### 4. Run the app

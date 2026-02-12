@@ -1,219 +1,254 @@
 from flask import Flask
-import subprocess
-import re
+from flask_socketio import SocketIO
+import subprocess, re, eventlet
 from collections import deque
 from datetime import datetime
 
+eventlet.monkey_patch()
+
 app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
-# Keep last 60 samples (~5 minutes @ 5s refresh)
-history_maxlen = 60
-cpu_temp_history = deque(maxlen=history_maxlen)
-gpu_temp_history = deque(maxlen=history_maxlen)
-time_labels = deque(maxlen=history_maxlen)
+MAX_POINTS = 1800  # 1h history
 
-# ---------- CPU TEMP ----------
+cpu_temp = deque(maxlen=MAX_POINTS)
+gpu_temp = deque(maxlen=MAX_POINTS)
+cpu_use = deque(maxlen=MAX_POINTS)
+gpu_use = deque(maxlen=MAX_POINTS)
+labels = deque(maxlen=MAX_POINTS)
+
+
+# ---------------- helpers ----------------
 def get_cpu_temp():
     out = subprocess.getoutput("sensors")
-    match = re.search(r"Package id 0:\s+\+?([\d\.]+)", out)
-    return match.group(1) if match else "0"
+    m = re.search(r"Package id 0:\s+\+?([\d\.]+)", out)
+    return float(m.group(1)) if m else 0
 
-# ---------- CPU USAGE (Your working version) ----------
+
 def get_cpu_usage():
     out = subprocess.getoutput("top -bn1 | grep 'Cpu(s)'")
-    match = re.search(r"(\d+\.\d+)\s*id", out)
-    if match:
-        idle = float(match.group(1))
-        return round(100 - idle, 1)
-    return "0"
+    m = re.search(r"(\d+\.\d+)\s*id", out)
+    return round(100 - float(m.group(1)), 1) if m else 0
 
-# ---------- GPU (Your working version) ----------
-def get_gpu_stats():
+
+def get_gpu():
     try:
         out = subprocess.getoutput(
             "nvidia-smi --query-gpu=temperature.gpu,utilization.gpu --format=csv,noheader,nounits"
         )
-        temp, usage = out.split(",")
-        return temp.strip(), usage.strip()
+        t, u = out.split(",")
+        return float(t), float(u)
     except:
-        return "0", "0"
+        return 0, 0
 
+
+# ---------------- collector ----------------
+def background():
+    while True:
+        ct = get_cpu_temp()
+        cu = get_cpu_usage()
+        gt, gu = get_gpu()
+
+        labels.append(datetime.now().strftime("%H:%M"))
+
+        cpu_temp.append(ct)
+        gpu_temp.append(gt)
+        cpu_use.append(cu)
+        gpu_use.append(gu)
+
+        socketio.emit("update", {
+            "labels": list(labels),
+            "ct": list(cpu_temp),
+            "gt": list(gpu_temp),
+            "cu": list(cpu_use),
+            "gu": list(gpu_use),
+        })
+
+        eventlet.sleep(2)
+
+
+# ---------------- UI ----------------
 @app.route("/")
-def index():
-    c_temp = get_cpu_temp()
-    c_usage = get_cpu_usage()
-    g_temp, g_usage = get_gpu_stats()
-    
-    # Get current time for labels
-    now = datetime.now().strftime("%H:%M:%S")
-
-    # Store in history
-    try:
-        cpu_temp_history.append(float(c_temp))
-        gpu_temp_history.append(float(g_temp))
-        time_labels.append(now)
-    except:
-        pass
-
-    return f"""
+def root():
+    return """
 <html>
 <head>
-    <meta http-equiv="refresh" content="5">
-    <style>
-        body {{
-            background: transparent;
-            color: #eee;
-            font-family: system-ui, -apple-system, sans-serif;
-            margin: 0;
-            padding: 15px;
-            overflow: hidden;
-        }}
+<meta charset="utf-8">
 
-        .grid {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            text-align: center;
-            margin-bottom: 10px;
-        }}
+<style>
+body{
+  background:transparent;
+  color:#eee;
+  font-family:system-ui;
+  margin:0;
+  padding:10px;
+}
 
-        .title {{
-            font-size: 14px;
-            opacity: 0.7;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }}
+.grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:12px;
+  text-align:center;
+}
 
-        .temp {{
-            font-size: 36px; /* Bigger, clearer numbers */
-            font-weight: 800;
-            margin-top: 2px;
-            line-height: 1;
-        }}
+.temp{
+  font-size:42px;
+  font-weight:800;
+}
 
-        .usage {{
-            font-size: 15px;
-            opacity: 0.6;
-            margin-top: 4px;
-        }}
+.cpu{color:#00bfff;}
+.gpu{color:#00ff66;}
 
-        .chart-container {{
-            position: relative;
-            height: 200px;
-            width: 100%;
-            margin-top: 10px;
-        }}
+.usage{
+  font-size:13px;
+  opacity:.7;
+}
 
-        .footer-time {{
-            text-align: center;
-            font-size: 12px;
-            color: #666;
-            margin-top: 10px;
-            font-family: monospace;
-        }}
-    </style>
+.stats{
+  font-size:12px;
+  opacity:.85;
+  margin-top:6px;
+  line-height:1.6;
+  white-space:pre-line;
+}
+
+#chart{
+  width:100%!important;
+  margin-top:14px;
+}
+</style>
 </head>
+
 <body>
 
 <div class="grid">
-    <div>
-        <div class="title">CPU</div>
-        <div class="temp" style="color: #00bfff;">{c_temp}°C</div>
-        <div class="usage">{c_usage}% load</div>
-    </div>
-    <div>
-        <div class="title">GPU</div>
-        <div class="temp" style="color: #00ff66;">{g_temp}°C</div>
-        <div class="usage">{g_usage}% load</div>
-    </div>
+
+  <div>
+    <div class="temp cpu" id="cpu_main">--°C</div>
+    <div class="usage" id="cpu_usage">--%</div>
+    <div class="stats" id="cpu_stats"></div>
+  </div>
+
+  <div>
+    <div class="temp gpu" id="gpu_main">--°C</div>
+    <div class="usage" id="gpu_usage">--%</div>
+    <div class="stats" id="gpu_stats"></div>
+  </div>
+
 </div>
 
-<div class="chart-container">
-    <canvas id="chart"></canvas>
-</div>
+<canvas id="chart"></canvas>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script>
-const ctx = document.getElementById('chart').getContext('2d');
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 
-new Chart(ctx, {{
-    type: 'line',
-    data: {{
-        labels: {list(time_labels)},
-        datasets: [
-            {{
-                label: 'CPU Temp',
-                data: {list(cpu_temp_history)},
-                borderColor: '#00bfff',
-                backgroundColor: 'rgba(0, 191, 255, 0.1)',
-                borderWidth: 3,
-                tension: 0.4,
-                pointRadius: 0,
-                pointHoverRadius: 6,
-                fill: true
-            }},
-            {{
-                label: 'GPU Temp',
-                data: {list(gpu_temp_history)},
-                borderColor: '#00ff66',
-                backgroundColor: 'rgba(0, 255, 102, 0.1)',
-                borderWidth: 3,
-                tension: 0.4,
-                pointRadius: 0,
-                pointHoverRadius: 6,
-                fill: true
-            }}
-        ]
-    }},
-    options: {{
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: {{
-            mode: 'index',
-            intersect: false,
-        }},
-        plugins: {{
-            legend: {{ display: false }},
-            tooltip: {{
-                enabled: true,
-                backgroundColor: 'rgba(0, 0, 0, 0.8)',
-                padding: 12,
-                titleFont: {{ size: 14 }},
-                bodyFont: {{ size: 14, weight: 'bold' }},
-                displayColors: true,
-                callbacks: {{
-                    label: function(context) {{
-                        return context.dataset.label + ": " + context.parsed.y + "°C";
-                    }}
-                }}
-            }}
-        }},
-        scales: {{
-            x: {{
-                display: false /* Hide axis but keep labels for tooltips */
-            }},
-            y: {{
-                min: 20,
-                max: 100,
-                ticks: {{
-                    color: '#999',
-                    font: {{
-                        size: 14, /* Larger chart numbers */
-                        weight: 'bold'
-                    }},
-                    padding: 10
-                }},
-                grid: {{
-                    color: 'rgba(255, 255, 255, 0.05)'
-                }},
-                border: {{ display: false }}
-            }}
-        }}
-    }}
-}});
+<script>
+const socket = io();
+
+const chart = new Chart(document.getElementById('chart'), {
+ type:'line',
+ data:{
+   labels:[],
+   datasets:[
+     {label:'CPU Temp',data:[],borderColor:'#00bfff',pointRadius:0,tension:.35},
+     {label:'GPU Temp',data:[],borderColor:'#00ff66',pointRadius:0,tension:.35},
+     {label:'CPU Use',data:[],borderColor:'#00bfff',borderDash:[5,5],pointRadius:0},
+     {label:'GPU Use',data:[],borderColor:'#00ff66',borderDash:[5,5],pointRadius:0}
+   ]
+ },
+ options:{
+   responsive:true,
+   maintainAspectRatio:true,
+   animation:false,
+   devicePixelRatio:(window.devicePixelRatio||1)*2,
+
+   layout:{padding:{left:10,right:10,top:5,bottom:5}},
+
+   interaction:{mode:'index',intersect:false},
+
+   plugins:{
+     legend:{display:false},
+     tooltip:{
+       backgroundColor:'#111',
+       titleColor:'#fff',
+       bodyColor:'#fff',
+       borderColor:'#333',
+       borderWidth:1
+     }
+   },
+
+   scales:{
+     y:{
+       min:0,
+       max:100,
+       ticks:{stepSize:20},
+       alignToPixels:true
+     },
+     x:{
+       bounds:'ticks',
+       ticks:{
+         maxTicksLimit:10,
+         maxRotation:45,
+         minRotation:45,
+         autoSkip:true
+       }
+     }
+   }
+ }
+});
+
+
+function statTemp(arr){
+ const min=Math.min(...arr)
+ const max=Math.max(...arr)
+ const avg=(arr.reduce((a,b)=>a+b,0)/arr.length).toFixed(1)
+
+ return `Temperature
+Min: ${min}°C
+Avg: ${avg}°C
+Max: ${max}°C
+
+`
+}
+
+function statUse(arr){
+ const min=Math.min(...arr)
+ const max=Math.max(...arr)
+ const avg=(arr.reduce((a,b)=>a+b,0)/arr.length).toFixed(1)
+
+ return `Usage
+Min: ${min}%
+Avg: ${avg}%
+Max: ${max}%`
+}
+
+
+
+socket.on("update", d=>{
+
+ chart.data.labels=d.labels
+ chart.data.datasets[0].data=d.ct
+ chart.data.datasets[1].data=d.gt
+ chart.data.datasets[2].data=d.cu
+ chart.data.datasets[3].data=d.gu
+ chart.update()
+
+ cpu_main.innerText=d.ct.at(-1)+"°C"
+ gpu_main.innerText=d.gt.at(-1)+"°C"
+
+ cpu_usage.innerText=d.cu.at(-1)+"% usage"
+ gpu_usage.innerText=d.gu.at(-1)+"% usage"
+
+ cpu_stats.innerText = statTemp(d.ct)+statUse(d.cu)
+ gpu_stats.innerText = statTemp(d.gt)+statUse(d.gu)
+})
 </script>
+
 </body>
 </html>
 """
 
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=2013)
+    socketio.start_background_task(background)
+    socketio.run(app, host="0.0.0.0", port=2013)
