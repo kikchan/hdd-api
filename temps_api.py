@@ -187,12 +187,19 @@ body{
 <div id="overlay" class="overlay"></div>
 <canvas id="chart"></canvas>
 
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 
 <script>
 const socket = io();
 const overlay = document.getElementById("overlay");
+const canvas = document.getElementById('chart');
+
+canvas.addEventListener('mouseleave', () => {
+  overlay.style.display = "none";
+});
+
 
 const chart = new Chart(document.getElementById('chart'), {
  type:'line',
@@ -223,14 +230,39 @@ const chart = new Chart(document.getElementById('chart'), {
       overlay.style.display="block";
 
       // ✅ PERFECT ALIGNMENT
-      overlay.style.left = (e.native.clientX + 14) + "px";
-      overlay.style.top  = (e.native.clientY + 14) + "px";
+      const padding = 14;
+
+      const mouseX = e.native.clientX;
+      const mouseY = e.native.clientY;
+      
+      // Get overlay size
+      overlay.style.display = "block";
+      const rect = overlay.getBoundingClientRect();
+      const overlayWidth = rect.width;
+      const overlayHeight = rect.height;
+      
+      let left = mouseX + padding;
+      let top  = mouseY + padding;
+      
+      // If overflowing right → place on left
+      if (left + overlayWidth > window.innerWidth) {
+        left = mouseX - overlayWidth - padding;
+      }
+      
+      // If overflowing bottom → place above
+      if (top + overlayHeight > window.innerHeight) {
+        top = mouseY - overlayHeight - padding;
+      }
+      
+      overlay.style.left = left + "px";
+      overlay.style.top  = top + "px";
 
       overlay.innerHTML =
         "Time: "+chart.data.labels[i]+"<br>"+
         "CPU: "+chart.data.datasets[0].data[i]+"°C ("+chart.data.datasets[2].data[i]+"%)<br>"+
         "GPU: "+chart.data.datasets[1].data[i]+"°C ("+chart.data.datasets[3].data[i]+"%)<br>"+
-        "RAM: "+chart.data.datasets[4].data[i]+"%"
+        "RAM: "+chart.data.datasets[4].data[i]+"%<br>"+
+        "SWAP: "+chart.data.datasets[5].data[i]+"%"
    },
    scales:{
      y:{min:0,max:100},
